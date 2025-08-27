@@ -1,0 +1,20 @@
+# Use Node.js 18 Alpine for development
+FROM node:18-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files
+COPY client/package*.json ./
+
+# Install all dependencies (including dev dependencies)
+RUN npm install
+
+# Copy source code
+COPY client/ ./
+
+# Expose port 3000
+EXPOSE 3000
+
+# Start the development server
+CMD ["npm", "start"]

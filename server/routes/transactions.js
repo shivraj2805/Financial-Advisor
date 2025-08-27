@@ -45,8 +45,7 @@ router.post('/process-receipt-gemini', transactionController.processReceiptWithG
 // POST /api/transactions/upload-receipt - Upload receipt file
 router.post('/upload-receipt', transactionController.uploadReceipt);
 
-// GET /api/transactions/test-upload - Test file upload functionality
-router.get('/test-upload', transactionController.testFileUpload);
+
 
 // DELETE /api/transactions/:id - Delete a transaction
 router.delete('/:id', transactionController.deleteTransaction);

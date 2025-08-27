@@ -47,16 +47,7 @@ const handleMulterError = (error, req, res, next) => {
   next();
 };
 
-// Test endpoint to verify OCR service is working
-router.get('/test', (req, res) => {
-  res.json({
-    status: 'OK',
-    message: 'OCR service is running',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    geminiConfigured: !!process.env.GEMINI_API_KEY
-  });
-});
+
 
 router.post('/upload-financial-doc', upload.single('file'), handleMulterError, handleUpload);
 router.post('/extract-financial-info', handleExtract);

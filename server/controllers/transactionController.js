@@ -904,21 +904,3 @@ exports.uploadReceipt = async (req, res) => {
     }
 };
 
-// Test file upload functionality
-exports.testFileUpload = async (req, res) => {
-    try {
-        res.json({
-            success: true,
-            message: 'File upload endpoint is working',
-            uploadsDir: uploadsDir,
-            timestamp: new Date().toISOString()
-        });
-    } catch (err) {
-        console.error('Error testing file upload:', err.message);
-        res.status(500).json({ 
-            error: 'Server error',
-            message: 'Failed to test file upload',
-            details: process.env.NODE_ENV === 'development' ? err.message : undefined
-        });
-    }
-};

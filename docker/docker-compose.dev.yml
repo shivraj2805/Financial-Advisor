@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7.0
+    container_name: financial-advisor-mongodb-dev
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: password123
+      MONGO_INITDB_DATABASE: financial_advisor
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data_dev:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - financial-advisor-network-dev
+
+  # Node.js Server (Development)
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.server.dev
+    container_name: financial-advisor-server-dev
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+      - PORT=8080
+      - MONGO_URL=mongodb://admin:password123@mongodb:27017/financial_advisor?authSource=admin
+      - JWT_SECRET=dev-jwt-secret-key
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_CALLBACK_URL=http://localhost:8080/auth/google/callback
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../server:/app
+      - /app/node_modules
+      - server_uploads_dev:/app/uploads
+    depends_on:
+      - mongodb
+    networks:
+      - financial-advisor-network-dev
+    command: npm run dev
+
+  # React Client (Development)
+  client:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.client.dev
+    container_name: financial-advisor-client-dev
+    restart: unless-stopped
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080
+      - REACT_APP_SOCKET_URL=http://localhost:8080
+      - CHOKIDAR_USEPOLLING=true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../client:/app
+      - /app/node_modules
+    depends_on:
+      - server
+    networks:
+      - financial-advisor-network-dev
+    command: npm start
+
+volumes:
+  mongodb_data_dev:
+    driver: local
+  server_uploads_dev:
+    driver: local
+
+networks:
+  financial-advisor-network-dev:
+    driver: bridge

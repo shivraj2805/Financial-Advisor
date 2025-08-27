@@ -38,7 +38,7 @@ import LandingPage from "./LandingPage/Landingpage";
 
 import ExpenseTracker from "./Pages/ExpenseTracker"; // Adjust the path based on your file structure
 import ScamsPage from "./Pages/ScamsPage";
-import VoiceTest from "./components/VoiceTest";
+
 import VoiceNavigator from "./components/VoiceNavigator";
 import VoiceNavigatorBanner from "./components/VoiceNavigatorBanner";
 
@@ -109,7 +109,7 @@ function App() {
 
          <Route path="/scams" element={<ProtectedRoute><ScamsPage /></ProtectedRoute>} />
          <Route path="/meetings" element={<ProtectedRoute><div className="p-8 text-center"><h1 className="text-2xl font-bold mb-4">Schedule a Meeting</h1><p>Meeting scheduling feature coming soon!</p></div></ProtectedRoute>} />
-         <Route path="/voice-test" element={<VoiceTest />} />
+
 
          <Route path="/game" element={<ProtectedRoute><Game /></ProtectedRoute>} />
 
