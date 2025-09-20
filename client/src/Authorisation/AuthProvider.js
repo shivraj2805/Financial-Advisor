@@ -1,5 +1,5 @@
 import React, { createContext, useState, useEffect } from "react";
-import axios from "axios";
+import api from './axiosConfig';
 import { toast } from 'react-toastify';
 import { clearAuthData, setAuthData, getAuthData } from "../utils/authUtils";
 import { useAuthState, setAuthState, clearAuthState } from "../hooks/useAuthState";
@@ -81,9 +81,7 @@ export const AuthProvider = ({ children }) => {
         draggable: false,
       });
 
-      await axios.post(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080'}/api/auth/logout`, {}, {
-        withCredentials: true
-      });
+      await api.post('/auth/logout');
 
       // Dismiss loading toast
       toast.dismiss(loadingToast);
@@ -133,9 +131,13 @@ export const AuthProvider = ({ children }) => {
   const verifyAuth = async () => {
     try {
       console.log('🔍 Verifying authentication with server...');
-      const response = await axios.get(`${process.env.REACT_APP_BACKEND_URL || 'http://localhost:8080'}/api/auth/verify`, {
-        withCredentials: true
-      });
+      // Get token from localStorage
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No token found');
+      }
+      
+      const response = await api.get('/auth/verify');
       
       if (response.data.success) {
         console.log('✅ Server verification successful');
