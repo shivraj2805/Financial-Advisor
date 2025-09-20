@@ -870,7 +870,7 @@ const VoiceNavigator = () => {
         wakeWordRecognitionActive.current = false;
         
         // Auto-restart wake word detection if not in conversation mode
-        if (!isActiveRef.current && !conversationMode) {
+        if (!isActiveRef.current && !conversationMode && !wakeWordRecognitionActive.current) {
           setTimeout(() => {
             if (wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current) {
               try {
@@ -878,6 +878,10 @@ const VoiceNavigator = () => {
                 wakeWordRecognitionRef.current.start();
               } catch (error) {
                 console.log('Failed to restart wake word recognition:', error.message);
+                // Don't retry if already started
+                if (error.message.includes('already started')) {
+                  wakeWordRecognitionActive.current = true;
+                }
               }
             }
           }, 1000);
@@ -928,6 +932,10 @@ const VoiceNavigator = () => {
               wakeWordRecognitionRef.current.start();
             } catch (error) {
               console.log('Failed to restart wake word recognition after error:', error.message);
+              // Don't retry if already started
+              if (error.message.includes('already started')) {
+                wakeWordRecognitionActive.current = true;
+              }
             }
           }
         }, 2000);
