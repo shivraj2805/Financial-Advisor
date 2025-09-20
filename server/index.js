@@ -67,7 +67,8 @@ const allowedOrigins = [
   "http://127.0.0.1:3000",
   "http://127.0.0.1:8080",
   "https://finadvisior.vercel.app",
-  "https://finadvisorapp.vercel.app"
+  "https://finadvisorapp.vercel.app",
+  "https://financial-advisior.vercel.app/"
 ];
 
 app.use(cors({
