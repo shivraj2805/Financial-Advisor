@@ -871,8 +871,14 @@ const VoiceNavigator = () => {
         
         // Auto-restart wake word detection if not in conversation mode
         if (!isActiveRef.current && !conversationMode && !wakeWordRecognitionActive.current) {
-          setTimeout(() => {
-            if (wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current) {
+          // Clear any existing timeout to prevent multiple restarts
+          if (window.wakeWordRestartTimeout) {
+            clearTimeout(window.wakeWordRestartTimeout);
+          }
+          
+          window.wakeWordRestartTimeout = setTimeout(() => {
+            // Double-check that we're not already active
+            if (wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current && !isActiveRef.current) {
               try {
                 console.log('🎤 Auto-restarting wake word detection');
                 wakeWordRecognitionRef.current.start();
@@ -884,7 +890,8 @@ const VoiceNavigator = () => {
                 }
               }
             }
-          }, 1000);
+            window.wakeWordRestartTimeout = null;
+          }, 3000); // Increased delay to prevent rapid restarts
         }
       };
       
