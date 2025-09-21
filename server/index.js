@@ -68,7 +68,8 @@ const allowedOrigins = [
   "http://127.0.0.1:8080",
   "https://finadvisior.vercel.app",
   "https://finadvisorapp.vercel.app",
-  "https://financial-advisior.vercel.app"
+  "https://financial-advisior.vercel.app",
+  "https://financial-advisior-wppj.onrender.com" // Add your production domain
 ];
 
 app.use(cors({
@@ -87,7 +88,8 @@ app.use(cors({
       allowedOrigins.includes(origin) ||
       /^https:\/\/.*\.finadvisior\.vercel\.app$/.test(origin) ||
       /^https:\/\/.*\.finadvisorapp\.vercel\.app$/.test(origin) ||
-      /^https:\/\/.*\.financial-advisior\.vercel\.app$/.test(origin)
+      /^https:\/\/.*\.financial-advisior\.vercel\.app$/.test(origin) ||
+      /^https:\/\/.*\.onrender\.com$/.test(origin)
     ) {
       return callback(null, true);
     } else {

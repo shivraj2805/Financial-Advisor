@@ -13,6 +13,7 @@ const generateToken = (userId) => {
 // Google OAuth callback
 exports.googleCallback = (req, res) => {
   try {
+    console.log('🔍 Google OAuth callback - User:', req.user);
     const token = generateToken(req.user._id);
     
     // Set token in a secure Http-only cookie
@@ -23,10 +24,12 @@ exports.googleCallback = (req, res) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
     
-    // Redirect to success page
-    res.redirect(`${process.env.FRONTEND_URL}/success-login?access_token=${token}`);
+    console.log('✅ Google OAuth callback - Token generated and cookie set');
+    
+    // Redirect to success page with token for frontend storage
+    res.redirect(`${process.env.FRONTEND_URL}/success-login?access_token=${token}&user_id=${req.user._id}`);
   } catch (error) {
-    console.error('Error during Google callback:', error);
+    console.error('❌ Error during Google callback:', error);
     res.redirect(`${process.env.FRONTEND_URL}/login?error=login_failed`);
   }
 };
@@ -155,16 +158,23 @@ exports.register = async (req, res) => {
 // Get current user
 exports.getUser = (req, res) => {
   try {
+    console.log('🔍 getUser - Request headers:', req.headers);
+    console.log('🔍 getUser - Cookies:', req.cookies);
+    console.log('🔍 getUser - User from passport:', req.user);
+    
     if (!req.user) {
+      console.log('❌ getUser - No user found in request');
       return res.status(401).json({ message: 'User not authenticated' });
     }
+    
+    console.log('✅ getUser - User found:', req.user.email);
     
     res.json({
       success: true,
       user: req.user.toJSON()
     });
   } catch (error) {
-    console.error('Error fetching user details:', error);
+    console.error('❌ Error fetching user details:', error);
     res.status(500).json({ message: 'Internal server error' });
   }
 };

@@ -12,25 +12,79 @@ const SuccessLogin = () => {
     const fetchUser = async () => {
       const params = new URLSearchParams(window.location.search);
       const token = params.get('access_token');
+      const userId = params.get('user_id');
+
+      console.log('🔍 SuccessLogin - Token:', token ? 'Present' : 'Missing');
+      console.log('🔍 SuccessLogin - User ID:', userId);
 
       if (!token) {
+        console.log('❌ No token found, redirecting to login');
         return navigate('/login');
       }
 
       try {
+        // Store token in localStorage for axios interceptor
+        localStorage.setItem('token', token);
+        
+        // Set flag to indicate we're coming from Google OAuth
+        sessionStorage.setItem('fromGoogleOAuth', 'true');
+        
+        console.log('🔍 SuccessLogin - Making request to /api/auth/user');
+        
         const response = await axios.get(
           `${process.env.REACT_APP_BACKEND_URL}/api/auth/user`,
-          { withCredentials: true }
+          { 
+            withCredentials: true,
+            headers: {
+              'Authorization': `Bearer ${token}`
+            }
+          }
         );
         
+        console.log('✅ SuccessLogin - User response:', response.data);
+        
         if (response.data.success) {
+          // Store user data in localStorage
+          localStorage.setItem('user', JSON.stringify(response.data.user));
+          
+          // Login the user
           login(response.data.user, token);
-          navigate('/financialAdvisior');
+          
+          // Show success message
+          toast.success(`Welcome, ${response.data.user.name}! 🎉`, {
+            position: "top-center",
+            autoClose: 3000,
+            hideProgressBar: false,
+            closeOnClick: true,
+            pauseOnHover: true,
+            draggable: true,
+          });
+          
+          // Navigate to dashboard
+          setTimeout(() => {
+            navigate('/financialAdvisior');
+          }, 1000);
         } else {
+          console.log('❌ SuccessLogin - Login failed, redirecting to login');
           navigate('/login');
         }
       } catch (error) {
-        console.error('Error fetching user:', error);
+        console.error('❌ SuccessLogin - Error fetching user:', error);
+        console.error('❌ SuccessLogin - Error details:', error.response?.data);
+        
+        // Clear any stored data
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        
+        toast.error('Login failed. Please try again.', {
+          position: "top-center",
+          autoClose: 3000,
+          hideProgressBar: false,
+          closeOnClick: true,
+          pauseOnHover: true,
+          draggable: true,
+        });
+        
         navigate('/login');
       }
     };
