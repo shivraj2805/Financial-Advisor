@@ -552,7 +552,14 @@ const runFinancialExtraction = async (ocrText) => {
 
 exports.handleUpload = async (req, res) => {
   try {
+    console.log('🔍 OCR Upload - Request headers:', req.headers);
+    console.log('🔍 OCR Upload - Request origin:', req.headers.origin);
+    console.log('🔍 OCR Upload - Request method:', req.method);
+    console.log('🔍 OCR Upload - Request body:', req.body);
+    console.log('🔍 OCR Upload - Request file:', req.file);
+    
     if (!req.file) {
+      console.log('❌ OCR Upload - No file uploaded');
       return res.status(400).json({ error: 'No file uploaded' });
     }
 

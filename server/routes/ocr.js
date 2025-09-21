@@ -5,6 +5,27 @@ const path = require('path');
 const fs = require('fs');
 const { handleUpload, handleExtract } = require('../controllers/ocrController');
 
+// Add CORS headers for OCR routes
+router.use((req, res, next) => {
+  console.log('🔍 OCR Route - Origin:', req.headers.origin);
+  console.log('🔍 OCR Route - Method:', req.method);
+  console.log('🔍 OCR Route - Path:', req.path);
+  
+  // Set CORS headers
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.status(200).end();
+    return;
+  }
+  
+  next();
+});
+
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../uploads');
 if (!fs.existsSync(uploadsDir)) {
@@ -48,6 +69,16 @@ const handleMulterError = (error, req, res, next) => {
 };
 
 
+
+// Test endpoint to verify OCR route is accessible
+router.get('/test', (req, res) => {
+  console.log('🔍 OCR Test - Request received');
+  res.json({ 
+    success: true, 
+    message: 'OCR route is accessible',
+    timestamp: new Date().toISOString()
+  });
+});
 
 router.post('/upload-financial-doc', upload.single('file'), handleMulterError, handleUpload);
 router.post('/extract-financial-info', handleExtract);

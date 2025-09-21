@@ -69,7 +69,8 @@ const allowedOrigins = [
   "https://finadvisior.vercel.app",
   "https://finadvisorapp.vercel.app",
   "https://financial-advisior.vercel.app",
-  "https://financial-advisior-wppj.onrender.com" // Add your production domain
+  "https://financial-advisior-wppj.onrender.com", // Add your production domain
+  "https://financial-advisior.onrender.com" // Add your backend domain for testing
 ];
 
 app.use(cors({
@@ -89,7 +90,8 @@ app.use(cors({
       /^https:\/\/.*\.finadvisior\.vercel\.app$/.test(origin) ||
       /^https:\/\/.*\.finadvisorapp\.vercel\.app$/.test(origin) ||
       /^https:\/\/.*\.financial-advisior\.vercel\.app$/.test(origin) ||
-      /^https:\/\/.*\.onrender\.com$/.test(origin)
+      /^https:\/\/.*\.onrender\.com$/.test(origin) ||
+      /^https:\/\/.*\.vercel\.app$/.test(origin)
     ) {
       return callback(null, true);
     } else {
