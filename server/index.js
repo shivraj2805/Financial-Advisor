@@ -75,32 +75,82 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    console.log("Request Origin:", origin);
+    console.log("🔍 CORS Check - Request Origin:", origin);
+    console.log("🔍 CORS Check - Allowed Origins:", allowedOrigins);
 
     // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-
-    // Allow all localhost requests for development
-    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+    if (!origin) {
+      console.log("✅ CORS - No origin, allowing");
       return callback(null, true);
     }
 
+    // Allow all localhost requests for development
+    if (origin.includes('localhost') || origin.includes('127.0.0.1')) {
+      console.log("✅ CORS - Localhost origin, allowing");
+      return callback(null, true);
+    }
+
+    // Check if origin is in allowed list
+    if (allowedOrigins.includes(origin)) {
+      console.log("✅ CORS - Origin in allowed list:", origin);
+      return callback(null, true);
+    }
+
+    // Check pattern matching
     if (
-      allowedOrigins.includes(origin) ||
       /^https:\/\/.*\.finadvisior\.vercel\.app$/.test(origin) ||
       /^https:\/\/.*\.finadvisorapp\.vercel\.app$/.test(origin) ||
       /^https:\/\/.*\.financial-advisior\.vercel\.app$/.test(origin) ||
       /^https:\/\/.*\.onrender\.com$/.test(origin) ||
       /^https:\/\/.*\.vercel\.app$/.test(origin)
     ) {
+      console.log("✅ CORS - Origin matches pattern:", origin);
       return callback(null, true);
-    } else {
-      console.log("CORS blocked origin:", origin);
-      return callback(new Error("Not allowed by CORS"));
     }
+
+    console.log("❌ CORS - Origin blocked:", origin);
+    return callback(new Error("Not allowed by CORS"));
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  exposedHeaders: ['Content-Length', 'X-Foo', 'X-Bar']
 }));
+
+// Global CORS middleware to ensure headers are always set
+app.use((req, res, next) => {
+  console.log("🔍 Global CORS - Origin:", req.headers.origin);
+  console.log("🔍 Global CORS - Method:", req.method);
+  
+  // Set CORS headers for all requests
+  const origin = req.headers.origin;
+  if (origin && (
+    allowedOrigins.includes(origin) ||
+    /^https:\/\/.*\.vercel\.app$/.test(origin) ||
+    /^https:\/\/.*\.onrender\.com$/.test(origin) ||
+    origin.includes('localhost') ||
+    origin.includes('127.0.0.1')
+  )) {
+    res.header('Access-Control-Allow-Origin', origin);
+    console.log("✅ Global CORS - Headers set for origin:", origin);
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+    console.log("✅ Global CORS - Headers set for all origins");
+  }
+  
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    console.log("✅ Global CORS - Handling preflight request");
+    res.status(200).end();
+    return;
+  }
+  
+  next();
+});
 
 app.use(bodyParser.json());
 app.use(cookieParser());

@@ -10,15 +10,36 @@ router.use((req, res, next) => {
   console.log('🔍 OCR Route - Origin:', req.headers.origin);
   console.log('🔍 OCR Route - Method:', req.method);
   console.log('🔍 OCR Route - Path:', req.path);
+  console.log('🔍 OCR Route - Headers:', req.headers);
   
-  // Set CORS headers
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  // Set CORS headers - be more specific about allowed origins
+  const origin = req.headers.origin;
+  const allowedOrigins = [
+    'https://financial-advisior.vercel.app',
+    'https://financial-advisior-wppj.onrender.com',
+    'https://financial-advisior.onrender.com',
+    'http://localhost:3000',
+    'http://localhost:8080'
+  ];
+  
+  if (origin && allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    console.log('✅ OCR CORS - Origin allowed:', origin);
+  } else if (origin && /^https:\/\/.*\.vercel\.app$/.test(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+    console.log('✅ OCR CORS - Vercel origin allowed:', origin);
+  } else {
+    res.header('Access-Control-Allow-Origin', '*');
+    console.log('✅ OCR CORS - Wildcard origin set');
+  }
+  
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
   res.header('Access-Control-Allow-Credentials', 'true');
   
   // Handle preflight requests
   if (req.method === 'OPTIONS') {
+    console.log('✅ OCR CORS - Handling preflight request');
     res.status(200).end();
     return;
   }
