@@ -1,5 +1,7 @@
 # 🏦 Financial Advisor - Comprehensive Financial Management Platform
 
+![Project Workflow](Workflow.png)
+
 A full-stack MERN application that provides comprehensive financial advisory services, AI-powered assistance, gamified learning, and advanced financial tools for users of all backgrounds.
 
 ## 🌟 **Project Overview**
