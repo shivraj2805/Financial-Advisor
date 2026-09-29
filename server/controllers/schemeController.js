@@ -121,6 +121,13 @@ Instructions:
     res.json(parsed);
   } catch (error) {
     console.error("Error fetching schemes:", error.message);
-    res.status(500).json({ error: "Failed to fetch schemes" });
+    // Use the statusCode attached by gemini() so transient AI failures
+    // surface as 503 instead of being incorrectly converted to 500.
+    const httpStatus = error.statusCode || 500;
+    const clientMessage =
+      error.statusCode === 503
+        ? "AI service is temporarily unavailable. Please try again."
+        : "Failed to fetch schemes";
+    res.status(httpStatus).json({ error: clientMessage });
   }
 };

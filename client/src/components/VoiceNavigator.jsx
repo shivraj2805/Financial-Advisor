@@ -38,6 +38,14 @@ const VoiceNavigator = () => {
   const commandRecognitionActive = useRef(false);
   const isInitialized = useRef(false);
   const isActiveRef = useRef(false); // Track active state with ref
+  const conversationModeRef = useRef(false);   // Ref mirror of conversationMode — avoids stale closure in callbacks
+  const isSpeakingRef = useRef(false);          // Ref mirror of isSpeaking
+  const isStartingWakeWord = useRef(false);     // Guard: prevents concurrent wakeWord .start() calls
+  const resetActivityTimerRef = useRef(null);   // 60 s inactivity timer handle
+  const pendingCommandStartRef = useRef(null);  // Callback invoked by TTS onend to start command recognition
+  const startWakeWordListeningRef = useRef(null); // Stable ref to startWakeWordListening (breaks circular deps)
+  const handleWakeWordDetectedRef = useRef(null); // Stable ref to handleWakeWordDetected
+  const suppressUntilRef = useRef(0);             // Timestamp: discard onresult before this time (post-TTS echo guard)
   const backend_url = process.env.REACT_APP_BACKEND_URL || "http://localhost:8080";
 
   // Dragging functionality for the popup panel
@@ -534,53 +542,103 @@ const VoiceNavigator = () => {
     "what can you do": { type: 'help', response: "I can help you navigate to any page, get financial advice, track expenses, schedule meetings, and more. What would you like to do?" }
   };
 
-  // Voice functions with enhanced error handling
-  const speakResponse = useCallback((text) => {
-    if (isMuted || !synthesisRef.current) return;
-    
+  // speakResponse(text, onComplete?)
+  // onComplete is called inside utterance.onend — ONLY after TTS is truly done.
+  // This is the primary guard that prevents command recognition from starting while speaking.
+  const speakResponse = useCallback((text, onComplete) => {
+    if (isMuted || !synthesisRef.current) {
+      // If we can't speak, invoke callback immediately so the caller isn't stranded
+      if (onComplete) onComplete();
+      return;
+    }
+
     try {
-      // Stop any ongoing speech
+      // Cancel any ongoing speech. The cancelled utterance gets onerror('interrupted')
+      // which we deliberately suppress below — that is normal behaviour.
       synthesisRef.current.cancel();
-      
+
+      // Store the callback; it will be picked up by onend below.
+      // Cancelling a previous utterance also clears its pending callback.
+      pendingCommandStartRef.current = onComplete || null;
+
       setIsSpeaking(true);
-      
+      isSpeakingRef.current = true;   // ← sync ref immediately for callbacks
+
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.rate = 0.9;
       utterance.pitch = 1;
       utterance.volume = 0.8;
       utterance.lang = 'en-US';
-      
+
       utterance.onstart = () => {
         console.log('🎤 Started speaking:', text);
       };
-      
+
       utterance.onerror = (event) => {
-        console.error('Speech synthesis error:', event);
-        // Don't set error for interrupted speech (it's normal)
+        // 'interrupted' fires when cancel() is called — not a real error, suppress it.
         if (event.error !== 'interrupted') {
-        setError('Speech synthesis failed');
+          console.error('Speech synthesis error:', event);
+          setError('Speech synthesis failed');
         }
         setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        // Clear the echo-suppression window so the next utterance starts fresh
+        suppressUntilRef.current = 0;
+        // Do NOT invoke the callback on error — recognition state would be inconsistent.
+        pendingCommandStartRef.current = null;
       };
-      
+
       utterance.onend = () => {
         console.log('🎤 Finished speaking');
         setIsSpeaking(false);
+        isSpeakingRef.current = false;
+        // Set a 1.5-second post-TTS suppression window.
+        // The browser holds ~500ms of buffered audio in the mic pipeline after TTS ends.
+        // Any onresult frames arriving before this timestamp are discarded.
+        suppressUntilRef.current = Date.now() + 1500;
+        // Invoke and clear the pending post-TTS callback (e.g. start command recognition).
+        const cb = pendingCommandStartRef.current;
+        pendingCommandStartRef.current = null;
+        if (cb) {
+          cb();
+        } else if (
+          // No explicit callback, but we are in conversation mode and recognition stopped
+          // (e.g. after a navigation-confirmation TTS). Restart it.
+          conversationModeRef.current &&
+          isActiveRef.current &&
+          recognitionRef.current &&
+          !commandRecognitionActive.current
+        ) {
+          setTimeout(() => {
+            if (conversationModeRef.current && isActiveRef.current && !commandRecognitionActive.current) {
+              try {
+                console.log('🎤 Resuming command recognition after TTS confirmation');
+                commandRecognitionActive.current = true;
+                recognitionRef.current.start();
+              } catch (e) {
+                console.log('Failed to resume command recognition after TTS:', e.message);
+                commandRecognitionActive.current = false;
+              }
+            }
+          }, 200); // tiny extra gap after suppressUntilRef is set
+        }
       };
-      
+
       utterance.onpause = () => {
         console.log('🎤 Speech paused');
       };
-      
+
       utterance.onresume = () => {
         console.log('🎤 Speech resumed');
       };
-      
+
       synthesisRef.current.speak(utterance);
     } catch (error) {
       console.error('Speech synthesis error:', error);
       setError('Speech synthesis failed');
       setIsSpeaking(false);
+      isSpeakingRef.current = false;
+      pendingCommandStartRef.current = null;
     }
   }, [isMuted]);
 
@@ -629,25 +687,54 @@ const VoiceNavigator = () => {
     return partialPatterns.some(pattern => pattern.test(lowerText));
   }, [WAKE_WORDS]);
 
-  // Enhanced wake word detection handler - Google Assistant style
+  // ─── startWakeWordListening ───────────────────────────────────────────────────
+  // Single authoritative entry point for starting wake-word recognition.
+  // All callers must use this function — never call .start() directly.
+  const startWakeWordListening = useCallback(() => {
+    // Guard 1: recognition must be initialized
+    if (!isInitialized.current || !wakeWordRecognitionRef.current) return;
+    // Guard 2: synchronous race guard (set before any async gap)
+    if (isStartingWakeWord.current || wakeWordRecognitionActive.current) return;
+    // Guard 3: only start in idle mode
+    if (isActiveRef.current || isSpeakingRef.current || commandRecognitionActive.current || conversationModeRef.current) return;
+
+    isStartingWakeWord.current = true;
+    try {
+      console.log('🎤 Starting wake word listening');
+      wakeWordRecognitionRef.current.start();
+      setIsWakeWordListening(true);
+    } catch (error) {
+      console.log('Wake word recognition start error:', error.message);
+      isStartingWakeWord.current = false;
+      if (error.message && error.message.includes('already started')) {
+        wakeWordRecognitionActive.current = true;
+      }
+    }
+  }, []);
+
+  // Keep the stable refs in sync so event handlers always call the latest version
+  startWakeWordListeningRef.current = startWakeWordListening;
+
+  // ─── handleWakeWordDetected ───────────────────────────────────────────────────
   const handleWakeWordDetected = useCallback(() => {
-    // Prevent multiple simultaneous activations
-    if (isActive || isSpeaking) {
+    // Prevent multiple simultaneous activations — use refs not stale state
+    if (isActiveRef.current || isSpeakingRef.current) {
       console.log('🎤 Wake word detected but already active or speaking, ignoring...');
       return;
     }
-    
+
     console.log('🎤 Wake word detected! Starting Google Assistant-style voice assistant...');
     setWakeWordDetected(true);
     setIsActive(true);
-    isActiveRef.current = true; // Update ref immediately
-    dispatchVoiceStateChange(true); // Notify navbar
+    isActiveRef.current = true;
+    dispatchVoiceStateChange(true);
     setError(null);
     setConversationMode(true);
-    
+    conversationModeRef.current = true;   // ← sync ref immediately
+
     // Reset command recognition state to ensure clean start
     commandRecognitionActive.current = false;
-    
+
     // Stop wake word listening immediately to prevent self-triggering
     if (wakeWordRecognitionRef.current && wakeWordRecognitionActive.current) {
       try {
@@ -657,94 +744,79 @@ const VoiceNavigator = () => {
         console.log('Error stopping wake word recognition:', error.message);
       }
     }
-    
-    // Stop wake word listening temporarily
     setIsWakeWordListening(false);
-    
-    // Enhanced welcome message
-    setTimeout(() => {
-      const welcomeMessage = "Welcome to the Financial Advisor Platform. How can I help you navigate the pages?";
-      speakResponse(welcomeMessage);
-      
-      // Start command listening after speech with longer delay
-      setTimeout(() => {
-        // Reset command recognition state to ensure it can start
-        commandRecognitionActive.current = false;
-        
-        console.log('🎤 Attempting to start command recognition...');
+
+    // Clear any previous inactivity reset timer before creating a new one
+    if (resetActivityTimerRef.current) {
+      clearTimeout(resetActivityTimerRef.current);
+      resetActivityTimerRef.current = null;
+    }
+
+    // ── Helper: return to idle wake-word mode ─────────────────────────────────
+    const returnToWakeWordMode = () => {
+      setIsWakeWordListening(true);
+      setWakeWordDetected(false);
+      setIsActive(false);
+      isActiveRef.current = false;
+      dispatchVoiceStateChange(false);
+      setConversationMode(false);
+      conversationModeRef.current = false;
+      console.log('🎤 Returning to wake word listening mode');
+      // startWakeWordListeningRef keeps the latest stable ref — safe to call here
+      startWakeWordListeningRef.current?.();
+    };
+
+    // ── Helper: start command recognition — called ONLY from utterance.onend ──
+    // This guarantees the mic is NEVER open while TTS is still playing.
+    const startCommandRecognition = () => {
+      if (!recognitionRef.current || !isActiveRef.current || !isInitialized.current) {
+        console.log('🎤 Command recognition not available, returning to wake word mode');
+        returnToWakeWordMode();
+        return;
+      }
+      if (commandRecognitionActive.current) {
+        console.log('🎤 Command recognition already active, skipping start');
+        return;
+      }
+      try {
+        console.log('🎤 Starting command recognition for navigation requests...');
         console.log('🎤 Current state:', {
           recognitionRef: !!recognitionRef.current,
           isActive: isActiveRef.current,
-          isInitialized: isInitialized.current
+          isInitialized: isInitialized.current,
+          isSpeaking: isSpeakingRef.current,
         });
-        
-        if (recognitionRef.current && isActiveRef.current && isInitialized.current) {
-          try {
-            console.log('🎤 Starting command recognition for navigation requests...');
-            // Add a small delay to ensure wake word recognition is fully stopped
-            setTimeout(() => {
-              if (recognitionRef.current && isActiveRef.current) {
-          try {
-            recognitionRef.current.start();
-                  console.log('🎤 Command listening started - ready for navigation requests');
-                  // Add visual feedback
-                  setShowStatus(true);
-                  setTranscript('Listening for commands...');
-          } catch (error) {
-            console.log('Error starting command recognition:', error.message);
-          }
-              } else {
-                console.log('🎤 Command recognition conditions not met:', {
-                  recognitionRef: !!recognitionRef.current,
-                  commandRecognitionActive: commandRecognitionActive.current,
-                  isActive: isActive
-                });
-              }
-            }, 1000); // Longer delay to prevent conflicts
-          } catch (error) {
-            console.log('Error starting command recognition:', error.message);
-          }
-        } else {
-          console.log('🎤 Command recognition not available:', {
-            recognitionRef: !!recognitionRef.current,
-            isActive: isActiveRef.current,
-            isInitialized: isInitialized.current
-          });
-          
-          // Try to reinitialize if not available
-          if (!recognitionRef.current && isActiveRef.current) {
-            console.log('🎤 Attempting to reinitialize command recognition...');
-            initializeSpeechRecognition();
-          }
-        }
-      }, 6000); // Wait longer for speech to complete
-    }, 500);
-    
-    // Resume wake word listening after 60 seconds of inactivity (longer for better UX)
+        commandRecognitionActive.current = true;
+        recognitionRef.current.start();
+        console.log('🎤 Command listening started - ready for navigation requests');
+        setShowStatus(true);
+        setTranscript('Listening for commands...');
+      } catch (error) {
+        console.log('Error starting command recognition:', error.message);
+        commandRecognitionActive.current = false;
+        returnToWakeWordMode();
+      }
+    };
+
+    // Speak welcome message.
+    // startCommandRecognition is passed as onComplete → it fires inside utterance.onend,
+    // AFTER TTS finishes. The microphone does NOT open while the assistant is speaking.
     setTimeout(() => {
+      const welcomeMessage = "Welcome to the Financial Advisor Platform. How can I help you navigate the pages?";
+      speakResponse(welcomeMessage, startCommandRecognition);
+    }, 500);
+
+    // 60-second inactivity fallback: if the user never speaks, return to wake-word mode.
+    resetActivityTimerRef.current = setTimeout(() => {
+      resetActivityTimerRef.current = null;
       if (!isListening && isActiveRef.current) {
-        setIsWakeWordListening(true);
-        setWakeWordDetected(false);
-        setIsActive(false);
-        isActiveRef.current = false; // Update ref
-        dispatchVoiceStateChange(false); // Notify navbar
-        setConversationMode(false);
-        console.log('🎤 Returning to wake word listening mode');
-        
-        // AUTOMATICALLY restart wake word listening
-        setTimeout(() => {
-          if (wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current) {
-            try {
-              console.log('🎤 Automatically restarting wake word listening after conversation');
-              wakeWordRecognitionRef.current.start();
-            } catch (error) {
-              console.log('Error restarting wake word listening:', error.message);
-            }
-          }
-        }, 1000); // Longer delay
+        returnToWakeWordMode();
       }
     }, 60000);
-  }, [speakResponse, isListening, isActive, isSpeaking]);
+  }, [speakResponse, isListening, dispatchVoiceStateChange]);
+
+  // Keep ref in sync so the wake-word onresult handler always calls the latest version
+  handleWakeWordDetectedRef.current = handleWakeWordDetected;
 
   // Enhanced LLM-based voice command processing
   const processVoiceCommand = useCallback(async (command) => {
@@ -868,30 +940,24 @@ const VoiceNavigator = () => {
       wakeWordRecognitionRef.current.onend = () => {
         console.log('Wake word recognition ended');
         wakeWordRecognitionActive.current = false;
-        
-        // Auto-restart wake word detection if not in conversation mode
-        if (!isActiveRef.current && !conversationMode && !wakeWordRecognitionActive.current) {
-          // Clear any existing timeout to prevent multiple restarts
+        isStartingWakeWord.current = false;   // release the race guard
+
+        // Auto-restart ONLY if we are genuinely in idle / wake-word mode.
+        // Use refs so we read CURRENT values — not stale closure snapshots.
+        if (
+          !isActiveRef.current &&
+          !conversationModeRef.current &&
+          !isSpeakingRef.current &&
+          !commandRecognitionActive.current
+        ) {
           if (window.wakeWordRestartTimeout) {
             clearTimeout(window.wakeWordRestartTimeout);
           }
-          
           window.wakeWordRestartTimeout = setTimeout(() => {
-            // Double-check that we're not already active
-            if (wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current && !isActiveRef.current) {
-              try {
-                console.log('🎤 Auto-restarting wake word detection');
-                wakeWordRecognitionRef.current.start();
-              } catch (error) {
-                console.log('Failed to restart wake word recognition:', error.message);
-                // Don't retry if already started
-                if (error.message.includes('already started')) {
-                  wakeWordRecognitionActive.current = true;
-                }
-              }
-            }
             window.wakeWordRestartTimeout = null;
-          }, 3000); // Increased delay to prevent rapid restarts
+            console.log('🎤 Auto-restarting wake word detection');
+            startWakeWordListeningRef.current?.();
+          }, 1000);
         }
       };
       
@@ -910,41 +976,33 @@ const VoiceNavigator = () => {
         
         // Check for wake word in both final and interim results
         const textToCheck = finalTranscript || interimTranscript;
-        if (textToCheck && detectWakeWord(textToCheck) && !isSpeaking && !isActiveRef.current) {
+        if (textToCheck && detectWakeWord(textToCheck) && !isSpeakingRef.current && !isActiveRef.current) {
           console.log('Wake word detected:', textToCheck);
           try {
             wakeWordRecognitionRef.current?.stop();
           } catch (error) {
             console.log('Error stopping wake word recognition:', error.message);
           }
-          handleWakeWordDetected();
+          // Use ref so we always call the latest version of handleWakeWordDetected
+          handleWakeWordDetectedRef.current?.();
         }
       };
       
       wakeWordRecognitionRef.current.onerror = (event) => {
         console.error('Wake word recognition error:', event.error);
         wakeWordRecognitionActive.current = false;
-        
-        // Don't restart on aborted errors (normal when switching modes)
+        isStartingWakeWord.current = false;
+
+        // 'aborted' is expected when we intentionally stop (e.g. mode switch) — not an error
         if (event.error === 'aborted') {
           console.log('🎤 Wake word recognition aborted (normal when switching to command mode)');
           return;
         }
-        
-        // Restart wake word detection on other errors
+
+        // For any other error, attempt restart via the guarded helper
         setTimeout(() => {
-          if (isWakeWordListening && !isActiveRef.current && wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current) {
-            try {
-              console.log('🎤 Auto-restarting wake word detection after error');
-              wakeWordRecognitionRef.current.start();
-            } catch (error) {
-              console.log('Failed to restart wake word recognition after error:', error.message);
-              // Don't retry if already started
-              if (error.message.includes('already started')) {
-                wakeWordRecognitionActive.current = true;
-              }
-            }
-          }
+          console.log('🎤 Auto-restarting wake word detection after error');
+          startWakeWordListeningRef.current?.();
         }, 2000);
       };
 
@@ -968,53 +1026,57 @@ const VoiceNavigator = () => {
         setIsListening(false);
         setShowStatus(false);
         commandRecognitionActive.current = false;
-        
-        // If we're still in conversation mode, restart listening
-        if (conversationMode && isActiveRef.current) {
+
+        // Use refs (not stale state closures) to read current mode
+        if (conversationModeRef.current && isActiveRef.current) {
+          // Still in conversation mode — restart command listening
           console.log('🎤 Conversation mode active - restarting command recognition...');
-          commandRecognitionActive.current = false;
-          
           setTimeout(() => {
-            if (conversationMode && isActiveRef.current && recognitionRef.current) {
+            // Do not restart while the assistant is speaking — the suppression window
+            // in onresult handles echo, but it's cleaner not to start at all.
+            if (
+              conversationModeRef.current &&
+              isActiveRef.current &&
+              recognitionRef.current &&
+              !commandRecognitionActive.current &&
+              !isSpeakingRef.current
+            ) {
               try {
                 console.log('🎤 Restarting command recognition for continued conversation');
-                setTimeout(() => {
-                  if (recognitionRef.current) {
-              try {
+                commandRecognitionActive.current = true;
                 recognitionRef.current.start();
               } catch (error) {
                 console.log('Failed to restart command recognition:', error.message);
+                commandRecognitionActive.current = false;
               }
             }
-                }, 500);
-              } catch (error) {
-                console.log('Failed to restart command recognition:', error.message);
-              }
-            }
-          }, 2000);
+          }, 500);
         } else {
-          // Resume wake word listening
+          // End of conversation — return to wake-word mode
           setIsWakeWordListening(true);
           setWakeWordDetected(false);
           setIsActive(false);
-          isActiveRef.current = false; // Update ref
-          dispatchVoiceStateChange(false); // Notify navbar
+          isActiveRef.current = false;
+          dispatchVoiceStateChange(false);
           setConversationMode(false);
-          
+          conversationModeRef.current = false;   // ← sync ref
+          console.log('🎤 Returning to wake word listening mode after command ended');
           setTimeout(() => {
-            if (wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current) {
-              try {
-                console.log('🎤 Automatically restarting wake word listening after command recognition ended');
-                wakeWordRecognitionRef.current.start();
-              } catch (error) {
-                console.log('Error restarting wake word listening:', error.message);
-              }
-            }
-          }, 100);
+            startWakeWordListeningRef.current?.();
+          }, 500);
         }
       };
       
       recognitionRef.current.onresult = (event) => {
+        // ── Double post-TTS guard ─────────────────────────────────────────────
+        // Layer 1: isSpeakingRef — true while TTS is actively playing
+        // Layer 2: suppressUntilRef — timestamp-based window (1.5 s after TTS ends)
+        //   to discard buffered audio that the browser delivers after onend fires.
+        // Both layers together prevent TTS echo from being treated as user commands.
+        if (isSpeakingRef.current || Date.now() < suppressUntilRef.current) {
+          return;
+        }
+
         let finalTranscript = '';
         let interimTranscript = '';
         
@@ -1085,7 +1147,7 @@ const VoiceNavigator = () => {
     } else {
       setError('Speech synthesis not supported in this browser.');
     }
-  }, [isActive, conversationMode, isSpeaking, detectWakeWord, handleWakeWordDetected, processVoiceCommand, isWakeWordListening]);
+  }, [detectWakeWord, processVoiceCommand, dispatchVoiceStateChange]);
 
   // Enhanced LLM result handler
   const handleLLMResult = useCallback(async (result) => {
@@ -1095,11 +1157,7 @@ const VoiceNavigator = () => {
       case "OPEN_PAGE":
         if (result.target) {
           console.log('🎤 Opening page:', result.target);
-          speakResponse(`Opening ${getPageName(result.target)}`);
-          setTimeout(() => {
-            navigate(result.target);
-            speakResponse(`You're now on the ${getPageName(result.target)}. What would you like to do next?`);
-          }, 1000);
+          navigate(result.target);
         }
         break;
         
@@ -1170,254 +1228,154 @@ const VoiceNavigator = () => {
     if (learnedAliases[lowerCommand]) {
       console.log('🎤 Matched learned alias:', lowerCommand, '→', learnedAliases[lowerCommand]);
       const target = learnedAliases[lowerCommand];
-      speakResponse(`Opening ${getPageName(target)}`);
-      setTimeout(() => {
-        navigate(target);
-        speakResponse(`You're now on the ${getPageName(target)}. What would you like to do next?`);
-      }, 1000);
+      navigate(target);
       return;
     }
     
     // Fuzzy matching for calculator aliases
     if (CALC_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, CALC_ALIASES)) {
       console.log('🎤 Matched calculator alias:', lowerCommand);
-      speakResponse("Opening Calculator");
-      setTimeout(() => {
-        navigate(ROUTES.calculator);
-        speakResponse("You're now on the calculator page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.calculator);
       return;
     }
-    
+
     // Fuzzy matching for other aliases
     if (EXPENSE_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, EXPENSE_ALIASES)) {
       console.log('🎤 Matched expense alias:', lowerCommand);
-      speakResponse("Opening Expense Tracker");
-      setTimeout(() => {
-        navigate(ROUTES.expenses);
-        speakResponse("You're now on the expense tracker. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.expenses);
       return;
     }
-    
+
     if (COMMUNITY_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, COMMUNITY_ALIASES)) {
       console.log('🎤 Matched community alias:', lowerCommand);
-      speakResponse("Opening Community");
-      setTimeout(() => {
-        navigate(ROUTES.community);
-        speakResponse("You're now on the community page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.community);
       return;
     }
-    
+
     if (NEWS_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, NEWS_ALIASES)) {
       console.log('🎤 Matched news alias:', lowerCommand);
-      speakResponse("Opening News");
-      setTimeout(() => {
-        navigate(ROUTES.news);
-        speakResponse("You're now on the news page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.news);
       return;
     }
-    
+
     if (LEARN_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, LEARN_ALIASES)) {
       console.log('🎤 Matched learn alias:', lowerCommand);
-      speakResponse("Opening Learning Resources");
-      setTimeout(() => {
-        navigate(ROUTES.learn);
-        speakResponse("You're now on the learning resources page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.learn);
       return;
     }
 
     // Enhanced aliases for all routes
     if (HOME_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, HOME_ALIASES)) {
       console.log('🎤 Matched home alias:', lowerCommand);
-      speakResponse("Taking you to the homepage");
-      setTimeout(() => {
-        navigate(ROUTES.home);
-        speakResponse("You're now on the homepage. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.home);
       return;
     }
 
     if (DASHBOARD_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, DASHBOARD_ALIASES)) {
       console.log('🎤 Matched dashboard alias:', lowerCommand);
-      speakResponse("Opening your dashboard");
-      setTimeout(() => {
-        navigate(ROUTES.dashboard);
-        speakResponse("You're now on your dashboard. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.dashboard);
       return;
     }
 
     if (PROFILE_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, PROFILE_ALIASES)) {
       console.log('🎤 Matched profile alias:', lowerCommand);
-      speakResponse("Opening your profile");
-      setTimeout(() => {
-        navigate(ROUTES.profile);
-        speakResponse("You're now on your profile page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.profile);
       return;
     }
 
     if (LOGIN_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, LOGIN_ALIASES)) {
       console.log('🎤 Matched login alias:', lowerCommand);
-      speakResponse("Opening login page");
-      setTimeout(() => {
-        navigate(ROUTES.login);
-        speakResponse("You're now on the login page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.login);
       return;
     }
 
     if (SIGNUP_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, SIGNUP_ALIASES)) {
       console.log('🎤 Matched signup alias:', lowerCommand);
-      speakResponse("Opening registration page");
-      setTimeout(() => {
-        navigate(ROUTES.signup);
-        speakResponse("You're now on the registration page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.signup);
       return;
     }
 
     if (CHATBOT_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, CHATBOT_ALIASES)) {
       console.log('🎤 Matched chatbot alias:', lowerCommand);
-      speakResponse("Opening AI chatbot");
-      setTimeout(() => {
-        navigate(ROUTES.chatbot);
-        speakResponse("You're now on the AI chatbot page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.chatbot);
       return;
     }
 
     if (ADVISOR_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, ADVISOR_ALIASES)) {
       console.log('🎤 Matched advisor alias:', lowerCommand);
-      speakResponse("Opening financial advisor");
-      setTimeout(() => {
-        navigate(ROUTES.advisor);
-        speakResponse("You're now on the financial advisor page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.advisor);
       return;
     }
 
     if (SCAMS_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, SCAMS_ALIASES)) {
       console.log('🎤 Matched scams alias:', lowerCommand);
-      speakResponse("Opening fraud protection information");
-      setTimeout(() => {
-        navigate(ROUTES.scams);
-        speakResponse("You're now on the fraud protection page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.scams);
       return;
     }
 
     if (MIP_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, MIP_ALIASES)) {
       console.log('🎤 Matched MIP alias:', lowerCommand);
-      speakResponse("Opening microinvestment platform");
-      setTimeout(() => {
-        navigate(ROUTES.mip);
-        speakResponse("You're now on the microinvestment platform. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.mip);
       return;
     }
 
     if (POULTRY_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, POULTRY_ALIASES)) {
       console.log('🎤 Matched poultry alias:', lowerCommand);
-      speakResponse("Opening poultry farming guide");
-      setTimeout(() => {
-        navigate(ROUTES.poultry);
-        speakResponse("You're now on the poultry farming guide. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.poultry);
       return;
     }
 
     if (RURAL_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, RURAL_ALIASES)) {
       console.log('🎤 Matched rural alias:', lowerCommand);
-      speakResponse("Opening rural business opportunities");
-      setTimeout(() => {
-        navigate(ROUTES.rural);
-        speakResponse("You're now on the rural business page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.rural);
       return;
     }
 
     if (DAIRY_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, DAIRY_ALIASES)) {
       console.log('🎤 Matched dairy alias:', lowerCommand);
-      speakResponse("Opening dairy farming community");
-      setTimeout(() => {
-        navigate(ROUTES.dairy);
-        speakResponse("You're now on the dairy farming community page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.dairy);
       return;
     }
 
     if (SCHEME_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, SCHEME_ALIASES)) {
       console.log('🎤 Matched scheme alias:', lowerCommand);
-      speakResponse("Opening government schemes");
-      setTimeout(() => {
-        navigate(ROUTES.scheme);
-        speakResponse("You're now on the government schemes page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.scheme);
       return;
     }
 
     if (STORIES_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, STORIES_ALIASES)) {
       console.log('🎤 Matched stories alias:', lowerCommand);
-      speakResponse("Opening success stories");
-      setTimeout(() => {
-        navigate(ROUTES.stories);
-        speakResponse("You're now on the success stories page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.stories);
       return;
     }
 
     if (QNA_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, QNA_ALIASES)) {
       console.log('🎤 Matched Q&A alias:', lowerCommand);
-      speakResponse("Opening Q&A sessions");
-      setTimeout(() => {
-        navigate(ROUTES.qna);
-        speakResponse("You're now on the Q&A sessions page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.qna);
       return;
     }
 
     if (OCR_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, OCR_ALIASES)) {
       console.log('🎤 Matched OCR alias:', lowerCommand);
-      speakResponse("Opening document processing tool");
-      setTimeout(() => {
-        navigate(ROUTES.ocr);
-        speakResponse("You're now on the document processing page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.ocr);
       return;
     }
 
     if (ROAD_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, ROAD_ALIASES)) {
       console.log('🎤 Matched roadmap alias:', lowerCommand);
-      speakResponse("Opening financial planning roadmap");
-      setTimeout(() => {
-        navigate(ROUTES.road);
-        speakResponse("You're now on the financial planning roadmap. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.road);
       return;
     }
 
     if (SHORTS_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, SHORTS_ALIASES)) {
       console.log('🎤 Matched shorts alias:', lowerCommand);
-      speakResponse("Opening video content");
-      setTimeout(() => {
-        navigate(ROUTES.shorts);
-        speakResponse("You're now on the video content page. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.shorts);
       return;
     }
 
     if (MEETINGS_ALIASES.has(lowerCommand) || fuzzyMatch(lowerCommand, MEETINGS_ALIASES)) {
       console.log('🎤 Matched meetings alias:', lowerCommand);
-      speakResponse("Opening meeting scheduler");
-      setTimeout(() => {
-        navigate(ROUTES.meetings);
-        speakResponse("You're now on the meeting scheduler. What would you like to do next?");
-      }, 1000);
+      navigate(ROUTES.meetings);
       return;
     }
     
@@ -1515,63 +1473,28 @@ const VoiceNavigator = () => {
           if (action.path) {
             console.log('🎤 Navigating to:', action.path);
             navigate(action.path);
-            // Speak confirmation after navigation
-            setTimeout(() => {
-              const pageName = action.path === '/' ? 'home page' : 
-                              action.path === '/ppf' ? 'calculator page' :
-                              action.path === '/financialAdvisior' ? 'dashboard page' :
-                              action.path === '/expenses' ? 'expense tracker' :
-                              action.path === '/community' ? 'community page' :
-                              action.path === '/news' ? 'news page' :
-                              action.path === '/learn' ? 'learning resources' :
-                              action.path === '/chatbot' ? 'chatbot' :
-                              action.path === '/scams' ? 'scams information' :
-                              action.path === '/profile' ? 'profile page' :
-                              action.path === '/login' ? 'login page' :
-                              action.path === '/signup' ? 'signup page' :
-                              action.path;
-              speakResponse(`You're now on the ${pageName}. What would you like to do next?`);
-            }, 1000);
           }
           break;
         case 'open_chat':
-          speakResponse("Opening chat interface for you.");
+          // no speech — navigate silently
           break;
         case 'schedule_meeting':
           navigate('/meetings');
-          setTimeout(() => {
-            speakResponse("I've opened the meeting scheduler. You can schedule your consultation here.");
-          }, 1000);
           break;
         case 'open_calculator':
           navigate('/ppf');
-          setTimeout(() => {
-            speakResponse("I've opened the financial calculator. You can calculate investments, PPF, and more here.");
-          }, 1000);
           break;
         case 'open_expenses':
           navigate('/expenses');
-          setTimeout(() => {
-            speakResponse("I've opened the expense tracker. You can track your spending and manage your budget here.");
-          }, 1000);
           break;
         case 'get_advice':
           navigate('/chatbot');
-          setTimeout(() => {
-            speakResponse("I've opened the AI chatbot. You can get personalized financial advice here.");
-          }, 1000);
           break;
         case 'investment_guide':
           navigate('/learn');
-          setTimeout(() => {
-            speakResponse("I've opened the learning resources. You can find investment guides and financial education here.");
-          }, 1000);
           break;
         case 'saving_tips':
           navigate('/learn');
-          setTimeout(() => {
-            speakResponse("I've opened the learning resources. You can find money-saving tips and financial education here.");
-          }, 1000);
           break;
         case 'greeting':
           // Handle greeting - already handled by response
@@ -1618,77 +1541,38 @@ const VoiceNavigator = () => {
   
   }, []); // Empty dependency array to run only once
 
-  // AUTOMATIC startup - start wake word listening immediately when component loads
+  // ── Single wake-word startup effect ───────────────────────────────────────
+  // Runs once on mount (pathname = '/') and again on each genuine page navigation.
+  // Does NOT re-run on isActive / isSpeaking / isWakeWordListening changes —
+  // those transitions are handled by onend / onend callbacks, not effects.
+  // This makes initialization idempotent and StrictMode-safe.
   useEffect(() => {
-    console.log('🎤 Component loaded - starting automatic wake word listening');
-    
-    // Dispatch initial state to navbar
-    dispatchVoiceStateChange(false);
-    
-    // Request microphone permission first
+    console.log('🎤 Page change / mount detected:', location.pathname);
+
+    // Request microphone permission once on mount (only meaningful the first time)
     const requestMicrophonePermission = async () => {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         console.log('🎤 Microphone permission granted');
-        stream.getTracks().forEach(track => track.stop()); // Stop the stream after permission
+        stream.getTracks().forEach(track => track.stop());
       } catch (error) {
         console.error('🎤 Microphone permission denied:', error);
         setError('Microphone access denied. Please allow microphone access to use voice navigation.');
       }
     };
-    
     requestMicrophonePermission();
-    
+
+    // Dispatch initial navbar state
+    dispatchVoiceStateChange(false);
+
+    // Defer slightly so the initialization effect (empty deps) always runs first
     const timer = setTimeout(() => {
-      if (isInitialized.current && wakeWordRecognitionRef.current && !wakeWordRecognitionActive.current && !isActiveRef.current && !isSpeaking) {
-        try {
-          console.log('🎤 Starting initial automatic wake word listening');
-          wakeWordRecognitionRef.current.start();
-          setIsWakeWordListening(true);
-        } catch (error) {
-          console.log('Initial wake word recognition error:', error.message);
-        }
-      }
-    }, 3000); // Wait longer for full initialization
+      console.log('🎤 Starting automatic wake word listening on page:', location.pathname);
+      startWakeWordListeningRef.current?.();
+    }, 600);
 
     return () => clearTimeout(timer);
-  }, [isActive, isSpeaking]);
-
-  // AUTOMATIC wake word detection - start on every page change
-  useEffect(() => {
-    console.log('🎤 Page changed to:', location.pathname, '- Starting automatic wake word listening');
-    
-    // Add a small delay to ensure proper initialization
-    const timer = setTimeout(() => {
-      if (isInitialized.current && wakeWordRecognitionRef.current && !isActiveRef.current && !wakeWordRecognitionActive.current && !isSpeaking) {
-         try {
-          console.log('🎤 Starting automatic wake word listening on page:', location.pathname);
-           wakeWordRecognitionRef.current.start();
-          setIsWakeWordListening(true);
-         } catch (error) {
-          console.log('Wake word recognition already started or error:', error.message);
-        }
-      }
-    }, 1000); // Longer delay for page transitions
-
-    return () => clearTimeout(timer);
-  }, [location.pathname, isActive, isSpeaking]); // Restart on every page change
-
-  // Also start wake word detection when conditions change
-  useEffect(() => {
-    // Add a small delay to ensure proper initialization
-    const timer = setTimeout(() => {
-      if (isInitialized.current && wakeWordRecognitionRef.current && isWakeWordListening && !isActive && !wakeWordRecognitionActive.current) {
-         try {
-           wakeWordRecognitionRef.current.start();
-      } catch (error) {
-          console.log('Wake word recognition already started or error:', error.message);
-        }
-      }
-    }, 100);
-
-    return () => clearTimeout(timer);
-  }, [isWakeWordListening, isActive]);
+  }, [location.pathname]); // ← ONLY re-runs on genuine navigation, never on state churn
 
   // Connection status monitoring - Removed unnecessary test endpoint call
   useEffect(() => {
@@ -1696,32 +1580,29 @@ const VoiceNavigator = () => {
     setConnectionStatus('connected');
   }, []);
 
-  // Cleanup timeouts and recognition on unmount
+  // Cleanup: cancel TTS, stop recognition, clear every timer on unmount
   useEffect(() => {
     return () => {
-      if (processingTimeoutRef.current) {
-        clearTimeout(processingTimeoutRef.current);
+      // Clear all timers
+      if (processingTimeoutRef.current) clearTimeout(processingTimeoutRef.current);
+      if (retryTimeoutRef.current) clearTimeout(retryTimeoutRef.current);
+      if (resetActivityTimerRef.current) clearTimeout(resetActivityTimerRef.current);
+      if (window.wakeWordRestartTimeout) {
+        clearTimeout(window.wakeWordRestartTimeout);
+        window.wakeWordRestartTimeout = null;
       }
-      if (retryTimeoutRef.current) {
-        clearTimeout(retryTimeoutRef.current);
-      }
-      
-      // Stop all recognition instances
-      if (wakeWordRecognitionRef.current && wakeWordRecognitionActive.current) {
-        try {
-        wakeWordRecognitionRef.current.stop();
-        } catch (error) {
-          console.log('Error stopping wake word recognition on cleanup:', error.message);
-        }
-      }
-      
-      if (recognitionRef.current && commandRecognitionActive.current) {
-        try {
-          recognitionRef.current.stop();
-        } catch (error) {
-          console.log('Error stopping command recognition on cleanup:', error.message);
-        }
-      }
+
+      // Cancel any ongoing TTS
+      try { synthesisRef.current?.cancel(); } catch (_) {}
+
+      // Stop wake-word recognition
+      wakeWordRecognitionActive.current = false;
+      isStartingWakeWord.current = false;
+      try { wakeWordRecognitionRef.current?.stop(); } catch (_) {}
+
+      // Stop command recognition
+      commandRecognitionActive.current = false;
+      try { recognitionRef.current?.stop(); } catch (_) {}
     };
   }, []);
 
@@ -1766,13 +1647,21 @@ const VoiceNavigator = () => {
             if (!isActive) {
               handleWakeWordDetected();
             } else {
+              // Manual stop — sync all state and refs, then return to wake-word mode
               setIsActive(false);
               isActiveRef.current = false;
-              dispatchVoiceStateChange(false); // Notify navbar
+              dispatchVoiceStateChange(false);
               setConversationMode(false);
+              conversationModeRef.current = false;   // ← sync ref
               setIsWakeWordListening(true);
-              
-              // Stop command recognition
+
+              // Clear the inactivity reset timer
+              if (resetActivityTimerRef.current) {
+                clearTimeout(resetActivityTimerRef.current);
+                resetActivityTimerRef.current = null;
+              }
+
+              // Stop command recognition then return to wake-word listening
               if (recognitionRef.current && commandRecognitionActive.current) {
                 try {
                   recognitionRef.current.stop();
@@ -1780,6 +1669,8 @@ const VoiceNavigator = () => {
                   console.log('Error stopping command recognition:', error.message);
                 }
               }
+              // Give .stop() a moment to fire onend before starting wake-word
+              setTimeout(() => startWakeWordListeningRef.current?.(), 600);
             }
           }}
           title={isActive ? "Click to stop voice assistant" : "Say 'Hello Fin Advisor' to start"}
