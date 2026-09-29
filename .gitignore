@@ -68,3 +68,5 @@ storybook-static
 
 # Optional 11ty build output
 .eleventy.js
+.vercel
+.env*
