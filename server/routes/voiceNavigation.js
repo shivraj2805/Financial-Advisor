@@ -5,7 +5,7 @@ const { trackAnalytics, trackUserSession, trackError } = require('./voiceAnalyti
 
 // Initialize Gemini
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
 // Enhanced intent processing with LLM
 router.post('/process-intent', async (req, res) => {
