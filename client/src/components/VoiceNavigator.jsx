@@ -2,6 +2,28 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import SimpleIcons from './SimpleIcons';
 import { useNavigate, useLocation } from 'react-router-dom';
 
+// Module-level constant — stable reference, never causes useCallback deps to change
+const WAKE_WORDS = [
+  /^hello\s+fin\s+advisor$/i,
+  /^hello\s+financial\s+advisor$/i,
+  /^hi\s+fin\s+advisor$/i,
+  /^hi\s+financial\s+advisor$/i,
+  /^hey\s+fin\s+advisor$/i,
+  /^hey\s+financial\s+advisor$/i,
+  /^fin\s+advisor$/i,
+  /^financial\s+advisor$/i,
+  /hello\s+financial\s+advisior/i,
+  /hello\s+fin\s+advisior/i,
+  /hi\s+financial\s+advisior/i,
+  /hey\s+financial\s+advisior/i,
+  /financial\s+advisior/i,
+  /fin\s+advisior/i,
+  /.*hello.*financial.*advisor.*/i,
+  /.*hello.*fin.*advisor.*/i,
+  /.*financial.*advisor.*/i,
+  /.*fin.*advisor.*/i
+];
+
 const VoiceNavigator = () => {
   // Voice state
   const [isListening, setIsListening] = useState(false);
@@ -15,7 +37,7 @@ const VoiceNavigator = () => {
   const [processingTime, setProcessingTime] = useState(0);
   const [isWakeWordListening, setIsWakeWordListening] = useState(true);
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [, setIsSpeaking] = useState(false);
 
   // UI state
   const [isOpen, setIsOpen] = useState(false);
@@ -156,87 +178,9 @@ const VoiceNavigator = () => {
     return saved ? JSON.parse(saved) : {};
   });
 
-  const [uiContext, setUiContext] = useState({ hasNext: false, hasBack: false, currentStep: 1, totalSteps: 1 });
+  const [uiContext] = useState({ hasNext: false, hasBack: false, currentStep: 1, totalSteps: 1 });
 
-  const websiteStructure = {
-    pages: {
-      home: { path: "/", description: "Main homepage" },
-      dashboard: { path: "/financialAdvisior", description: "User dashboard" },
-      profile: { path: "/profile", description: "User profile" },
-      login: { path: "/login", description: "Login" },
-      signup: { path: "/register", description: "Registration" },
-      ppf: { path: "/ppf", description: "PPF calculator" },
-      expenses: { path: "/expenses", description: "Expense tracking" },
-      news: { path: "/news", description: "Financial news" },
-      learn: { path: "/learn", description: "Learning resources" },
-      community: { path: "/community", description: "Community forum" },
-      dairy: { path: "/dairy", description: "Dairy farming" },
-      chatbot: { path: "/chatbot", description: "AI chatbot" },
-      advisor: { path: "/advisor", description: "Financial advisor" },
-      scams: { path: "/scams", description: "Scam protection" },
-      mip: { path: "/mip", description: "Microinvestment" },
-      poultry: { path: "/poultry", description: "Poultry farming" },
-      rural: { path: "/rural", description: "Rural business" },
-      scheme: { path: "/scheme", description: "Government schemes" },
-      stories: { path: "/stories", description: "Success stories" },
-      qna: { path: "/qna", description: "Q&A" },
-      ocr: { path: "/ocr", description: "Document OCR" },
-      road: { path: "/road", description: "Financial roadmap" },
-      shorts: { path: "/shorts", description: "Video content" },
-      meetings: { path: "/meetings", description: "Schedule meetings" }
-    },
-    actions: {
-      "send message": { action: "open_chat" },
-      "schedule meeting": { action: "schedule_meeting" },
-      "calculate": { action: "open_calculator" },
-      "track expenses": { action: "open_expenses" },
-      "get advice": { action: "get_advice" },
-      "invest money": { action: "investment_guide" },
-      "save money": { action: "saving_tips" }
-    }
-  };
 
-  const fallbackCommands = {
-    "hello financial advisor": { type: 'greeting', response: "Welcome! How can I help you?" },
-    "hello financial advisior": { type: 'greeting', response: "Welcome! How can I help you?" },
-    "go to calculator": { type: 'navigate', path: '/ppf' },
-    "open calculator": { type: 'navigate', path: '/ppf' },
-    "go to expenses": { type: 'navigate', path: '/expenses' },
-    "open expenses": { type: 'navigate', path: '/expenses' },
-    "go to community": { type: 'navigate', path: '/community' },
-    "go to news": { type: 'navigate', path: '/news' },
-    "go to learn": { type: 'navigate', path: '/learn' },
-    "go to home": { type: 'navigate', path: '/' },
-    "homepage": { type: 'navigate', path: '/' },
-    "go to dashboard": { type: 'navigate', path: '/financialAdvisior' },
-    "open dashboard": { type: 'navigate', path: '/financialAdvisior' },
-    "go to profile": { type: 'navigate', path: '/profile' },
-    "go to login": { type: 'navigate', path: '/login' },
-    "sign in": { type: 'navigate', path: '/login' },
-    "go to signup": { type: 'navigate', path: '/register' },
-    "register": { type: 'navigate', path: '/register' },
-    "go to chatbot": { type: 'navigate', path: '/chatbot' },
-    "open chatbot": { type: 'navigate', path: '/chatbot' },
-    "go to advisor": { type: 'navigate', path: '/advisor' },
-    "financial advisor": { type: 'navigate', path: '/advisor' },
-    "go to scams": { type: 'navigate', path: '/scams' },
-    "go to mip": { type: 'navigate', path: '/mip' },
-    "go to poultry": { type: 'navigate', path: '/poultry' },
-    "go to rural": { type: 'navigate', path: '/rural' },
-    "go to dairy": { type: 'navigate', path: '/dairy' },
-    "go to scheme": { type: 'navigate', path: '/scheme' },
-    "government schemes": { type: 'navigate', path: '/scheme' },
-    "go to stories": { type: 'navigate', path: '/stories' },
-    "go to qna": { type: 'navigate', path: '/qna' },
-    "go to ocr": { type: 'navigate', path: '/ocr' },
-    "go to road": { type: 'navigate', path: '/road' },
-    "roadmap": { type: 'navigate', path: '/road' },
-    "go to shorts": { type: 'navigate', path: '/shorts' },
-    "go to meetings": { type: 'navigate', path: '/meetings' },
-    "schedule meeting": { type: 'navigate', path: '/meetings' },
-    "help": { type: 'help', response: "Say the name of any page to navigate there. For example: 'calculator', 'expenses', 'dashboard', 'chatbot'." },
-    "what can you do": { type: 'help', response: "I can navigate to any page. Just say where you want to go." }
-  };
 
   // ── speakResponse(text, onComplete?) ─────────────────────────────────────────
   // onComplete fires ONLY inside utterance.onend — never while TTS is playing.
@@ -1074,7 +1018,7 @@ const VoiceNavigator = () => {
             <div>
               <h4 className="font-medium text-gray-800 text-sm mb-2">Navigation:</h4>
               <div className="grid grid-cols-2 gap-1">
-                {Object.keys(websiteStructure.pages).slice(0, 8).map((page) => (
+                {Object.keys(ROUTES).slice(0, 8).map((page) => (
                   <span key={page} className="text-xs bg-gray-100 px-2 py-1 rounded border text-gray-700">
                     "Go to {page}"
                   </span>
