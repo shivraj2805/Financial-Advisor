@@ -10,10 +10,8 @@ const VoiceNavigator = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [conversationMode, setConversationMode] = useState(false);
-  const [lastCommand, setLastCommand] = useState("");
   const [error, setError] = useState(null);
   const [connectionStatus, setConnectionStatus] = useState('connected');
-  const [retryCount, setRetryCount] = useState(0);
   const [processingTime, setProcessingTime] = useState(0);
   const [isWakeWordListening, setIsWakeWordListening] = useState(true);
   const [wakeWordDetected, setWakeWordDetected] = useState(false);
@@ -21,8 +19,6 @@ const VoiceNavigator = () => {
 
   // UI state
   const [isOpen, setIsOpen] = useState(false);
-  const [showStatus, setShowStatus] = useState(false);
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [drag, setDrag] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [rel, setRel] = useState({ x: 0, y: 0 });
@@ -421,8 +417,6 @@ const VoiceNavigator = () => {
         commandRecognitionActive.current = true;
         recognitionRef.current.start();
         console.log('🎤 Command listening started');
-        setShowStatus(true);
-        setTranscript('Listening for commands...');
       } catch (e) {
         console.log('Error starting command recognition:', e.message);
         commandRecognitionActive.current = false;
@@ -451,7 +445,6 @@ const VoiceNavigator = () => {
     console.log('🎤 Processing voice command:', command);
     setIsProcessing(true);
     setError(null);
-    setLastCommand(command);
     const startTime = Date.now();
     try {
       if (connectionStatus === 'offline') throw new Error('Offline mode');
@@ -482,7 +475,6 @@ const VoiceNavigator = () => {
         localStorage.setItem('voiceNavigatorAliases', JSON.stringify(newAliases));
       }
       setConnectionStatus('connected');
-      setRetryCount(0);
     } catch (error) {
       console.error('Error processing command:', error);
       setProcessingTime(Date.now() - startTime);
@@ -591,7 +583,6 @@ const VoiceNavigator = () => {
       recognitionRef.current.onstart = () => {
         console.log('Command recognition started');
         setIsListening(true);
-        setShowStatus(true);
         setError(null);
         commandRecognitionActive.current = true;
       };
@@ -599,7 +590,6 @@ const VoiceNavigator = () => {
       recognitionRef.current.onend = () => {
         console.log('Command recognition ended');
         setIsListening(false);
-        setShowStatus(false);
         commandRecognitionActive.current = false;
 
         if (conversationModeRef.current && isActiveRef.current) {
@@ -664,7 +654,6 @@ const VoiceNavigator = () => {
       recognitionRef.current.onerror = (event) => {
         console.error('Command recognition error:', event.error);
         setIsListening(false);
-        setShowStatus(false);
         if (event.error === 'aborted') {
           console.log('🎤 Command recognition aborted (normal)');
           return;
@@ -800,48 +789,6 @@ const VoiceNavigator = () => {
     return matrix[str2.length][str1.length];
   };
 
-  const getPageName = (path) => {
-    switch (path) {
-      case '/': return 'home page';
-      case '/ppf': return 'calculator page';
-      case '/expenses': return 'expense tracker';
-      case '/community': return 'community page';
-      case '/news': return 'news page';
-      case '/learn': return 'learning resources';
-      case '/chatbot': return 'chatbot';
-      case '/scams': return 'scams information';
-      case '/profile': return 'profile page';
-      case '/login': return 'login page';
-      case '/signup': return 'signup page';
-      default: return path;
-    }
-  };
-
-  // ── executeAction ─────────────────────────────────────────────────────────────
-  const executeAction = useCallback(async (action) => {
-    try {
-      console.log('🎤 Executing action:', action.type, action.path);
-      switch (action.type) {
-        case 'navigate':
-          if (action.path) { console.log('🎤 Navigating to:', action.path); navigate(action.path); }
-          break;
-        case 'open_chat': break;
-        case 'schedule_meeting': navigate('/meetings'); break;
-        case 'open_calculator': navigate('/ppf'); break;
-        case 'open_expenses': navigate('/expenses'); break;
-        case 'get_advice': navigate('/chatbot'); break;
-        case 'investment_guide': navigate('/learn'); break;
-        case 'saving_tips': navigate('/learn'); break;
-        case 'greeting': break;
-        case 'help': break;
-        case 'clarification': break;
-        default: console.log('Unknown action:', action);
-      }
-    } catch (error) {
-      console.error('Error executing action:', error);
-      setError('Failed to execute action');
-    }
-  }, [navigate]);
 
   const toggleListening = useCallback(() => {
     if (isListening) {
